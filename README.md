@@ -14,5 +14,5 @@ In the meantime, refer to okvis2 (https://github.com/ethz-mrl/okvis2), the under
 
 ## Related Papers
 
-- [OKVIS2-X:  Open Keyframe-based Visual-Inertial SLAM Configurable with Dense Depth or LiDAR, and GNSS]
+- [OKVIS2-X:  Open Keyframe-based Visual-Inertial SLAM Configurable with Dense Depth or LiDAR, and GNSS](https://arxiv.org/abs/2510.04612)
 - [OKVIS2: Realtime Scalable Visual-Inertial SLAM with Loop Closure](https://arxiv.org/abs/2202.09199)
