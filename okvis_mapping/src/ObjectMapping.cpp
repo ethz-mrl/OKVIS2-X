@@ -141,6 +141,9 @@ namespace okvis{
             }
         }
         // Average descriptor over evaluated pixels
+        if(num_evaluated_pixels == 0) {
+            return 0;
+        }
         average_descriptor /= num_evaluated_pixels;
 
         return num_evaluated_pixels;
@@ -187,6 +190,9 @@ namespace okvis{
         std::map<se::id_t, cv::Mat_<uint8_t>> raycasted_segment_masks = split(surface_segment_id);
 
         // Now, retrieve information from current SAM segmentation
+        if(sam_masks.shape.size() != 3 || sam_masks.shape[0] == 0 || !sam_masks.data_ptr) {
+            return cv::Mat(invalid_depth_mask.rows, invalid_depth_mask.cols, CV_16UC1, cv::Scalar(se::g_no_id));
+        }
         int64_t num_masks = sam_masks.shape[0];
         int64_t height = sam_masks.shape[1];
         int64_t width = sam_masks.shape[2];
@@ -420,6 +426,9 @@ namespace okvis{
 
         Descriptor vl_feature;
         size_t num_evaluated_pixels = averageDescriptor(clip_features, mask, vl_feature);
+        if(num_evaluated_pixels == 0) {
+            return;
+        }
         submapObjects_[mapId].emplace(std::make_pair(objectId, SubmapObject(objectId, mapId, vl_feature, num_evaluated_pixels)));
     }
 
@@ -439,6 +448,9 @@ namespace okvis{
 
         Descriptor vl_feature;
         size_t num_evaluated_pixels = averageDescriptor(clip_features, mask, vl_feature);
+        if(num_evaluated_pixels == 0) {
+            return;
+        }
 
         submapObjects_.at(mapId).at(segmentId).updateVisionLanguageDescriptor(vl_feature, num_evaluated_pixels);
 
