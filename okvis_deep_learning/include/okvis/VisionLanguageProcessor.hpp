@@ -17,6 +17,7 @@
 #include <thread>
 #include <atomic>
 #include <iostream>
+#include <mutex>
 
 #include <opencv2/calib3d.hpp>
 #include <opencv2/dnn/dnn.hpp>
@@ -88,6 +89,7 @@ private:
 
   size_t rgbCamIndex_;
   torch::Tensor textEmbedding_;
+  std::mutex textEmbeddingMutex_;
   torch::jit::script::Module visionEncoder_;
   okvis::threadsafe::Queue<VisualizationData> visualisationsQueue_;
 

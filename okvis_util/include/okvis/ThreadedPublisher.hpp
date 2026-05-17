@@ -106,7 +106,11 @@ class ThreadedPublisher {
      * @param msg Shared pointer to the new message.
      */
     void setLatestMessage(std::shared_ptr<MessageType> msg) {
-      queue_->PushNonBlockingDroppingIfFull(msg, 1);
+      if (!msg) {
+        return;
+      }
+      auto msg_snapshot = std::make_shared<MessageType>(*msg);
+      queue_->PushNonBlockingDroppingIfFull(msg_snapshot, 1);
 
       if (notifyCallback_) {
         notifyCallback_();
