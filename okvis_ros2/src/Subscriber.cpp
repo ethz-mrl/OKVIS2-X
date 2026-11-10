@@ -152,7 +152,7 @@ void Subscriber::imuCallback(const sensor_msgs::msg::Imu& msg)
   viInterface_->addImuMeasurement(timestamp, acc, gyr);
   
    // also forward for realtime prediction
-  // ThreadedSlam applies s_a itself; the real-time propagation needs it too (e.g. Livox IMU in g)
+  // ThreadedSlam applies s_a itself; the real-time propagation needs it too
   const Eigen::Vector3d accScaled = parameters_.imu.s_a.cwiseProduct(acc);
   if(seInterface_) {
     seInterface_->realtimePredict(timestamp, accScaled, gyr);
