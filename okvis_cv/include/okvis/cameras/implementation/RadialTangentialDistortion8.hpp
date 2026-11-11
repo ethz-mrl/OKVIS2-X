@@ -70,7 +70,7 @@ RadialTangentialDistortion8::RadialTangentialDistortion8(double k1, double k2,
 bool RadialTangentialDistortion8::setParameters(
     const Eigen::VectorXd & parameters)
 {
-  if (parameters.cols() != NumDistortionIntrinsics) {
+  if (parameters.size() != NumDistortionIntrinsics) {
     return false;
   }
   parameters_ = parameters;
