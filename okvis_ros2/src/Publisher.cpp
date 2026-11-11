@@ -451,6 +451,7 @@ void Publisher::publishSubmapsAsCallback(std::unordered_map<uint64_t, okvis::kin
                                          std::unordered_map<uint64_t, std::shared_ptr<okvis::SupereightMapType>> submapLookup,
                                          std::shared_ptr<okvis::ObjectMap> objectMap) 
 {
+  std::lock_guard<std::mutex> lock(submap_mesh_mtx_);
   constexpr size_t n = okvis::SupereightMapType::SurfaceMesh::value_type::num_vertexes;
 
   std_msgs::msg::Header header;
@@ -541,6 +542,8 @@ void Publisher::publishSubmapsAsCallback(std::unordered_map<uint64_t, okvis::kin
       submapMeshLookup_rgb_[it.first] = meshMarker;
     }
     else if ( containsObjects && publishMode_ == "Activations" ) {
+      meshMarker.colors.clear();
+      meshMarker.colors.resize(n * mesh.size());
       Descriptor query(text_embedding_vector_.data());
       auto& submab_objects = objectMap->submapObjects(it.first);
       // Eigen::Vector3f light_dir_in_K = T_OW.topLeftCorner<3,3>().transpose() * Eigen::Vector3f(0., -1., -1.); 
@@ -557,7 +560,6 @@ void Publisher::publishSubmapsAsCallback(std::unordered_map<uint64_t, okvis::kin
         for (size_t j = 0; j < n; j++) {
 
           if(!(mesh[i].id.id == se::g_not_mapped || mesh[i].id.id == se::g_no_id)){
-            meshMarker.points.emplace_back();
             const Eigen::Vector3f vertex_W = (T_OM * mesh[i].vertexes[j].homogeneous()).template head<3>();
             meshMarker.points[valMeshCnt].x = vertex_W.x();
             meshMarker.points[valMeshCnt].y = vertex_W.y();
@@ -821,6 +823,7 @@ void Publisher::publishRealTimePropagation(const okvis::Time& time, const Eigen:
 
 void Publisher::republishMeshes()
 {
+  std::lock_guard<std::mutex> lock(submap_mesh_mtx_);
   if(submapSurfaceMesh_.size() == 0){
     LOG(ERROR) << "No meshes present for re-meshing";
     return;
@@ -899,8 +902,12 @@ void Publisher::republishMeshes()
     }
     else if(publishMode_ == "Activations")
     {
+      auto objects_it = submapObjects_.find(cached_mesh.first);
+      if(objects_it == submapObjects_.end() || objects_it->second == nullptr || objects_it->second->empty()) {
+        continue;
+      }
       Descriptor query(text_embedding_vector_.data());
-      auto& submab_objects = submapObjects_[cached_mesh.first];
+      auto& submab_objects = objects_it->second;
       // Eigen::Vector3f light_dir_in_K = T_OW.topLeftCorner<3,3>().transpose() * Eigen::Vector3f(0., -1., -1.); 
       colour_mesh_by_match(mesh, *submab_objects, query, tinycolormap::ColormapType::Jet, 0.1, 0.5);
 
@@ -914,7 +921,6 @@ void Publisher::republishMeshes()
         }
         for (size_t j = 0; j < n; j++) {
           if(!(mesh[i].id.id == se::g_not_mapped || mesh[i].id.id == se::g_no_id)){
-            meshMarker.points.emplace_back();
             const Eigen::Vector3f vertex_W = (submapPoses_[cached_mesh.first] * mesh[i].vertexes[j].homogeneous()).template head<3>();
             meshMarker.points[valMeshCnt].x = vertex_W.x();
             meshMarker.points[valMeshCnt].y = vertex_W.y();
@@ -993,6 +999,7 @@ void Publisher::republishMeshes()
 }
 
 void Publisher::setMeshPublishingMode(const std::string &publishMode) {
+  std::lock_guard<std::mutex> lock(submap_mesh_mtx_);
   if(! (publishMode == "Colors" || publishMode == "Activations")){
     LOG(ERROR) << "Unknown MeshPublishing Mode given: " << publishMode << " - Setting to Colors.";
     return;

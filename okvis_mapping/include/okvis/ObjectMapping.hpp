@@ -172,13 +172,13 @@ namespace okvis{
         const Eigen::Vector3f ambient_light_f(ambient.r, ambient.g, ambient.b);
         for (auto& face : mesh) {
             const auto id = face.id.id;
-            if(id == 0) {
+            if(id == 0 || !segment_features.count(id)) {
                 const Eigen::Array3f color(tinycolormap::GetColor(0, colormap).data[0],
                                            tinycolormap::GetColor(0, colormap).data[1],
                                            tinycolormap::GetColor(0, colormap).data[2]);
 
                 face.colour.face = se::RGB{std::uint8_t(UINT8_MAX * color.x()), std::uint8_t(UINT8_MAX * color.y()), std::uint8_t(UINT8_MAX * color.z())};
-                continue; // Skip non-instance regions of the mesh and assign 0 color of colormap
+                continue; // Skip non-instance or not-yet-tracked regions and assign 0 color of colormap.
             }
             const float d = segment_features.at(id).vl_feature_.normalized().dot(query_feature.normalized());
             const float d_clamped = std::clamp(d, clamp_low, clamp_high);

@@ -173,7 +173,12 @@ namespace okvis {
         return;
       }
       okvis::TimerSwitchable t_vis_2("Vision Language - Draw visualization data for VL features");
-      torch::Tensor activationMap = torch::sum(frame.featureMap * textEmbedding_.view({1, 1, -1}), 2);
+      torch::Tensor textEmbedding;
+      {
+        std::lock_guard<std::mutex> lock(textEmbeddingMutex_);
+        textEmbedding = textEmbedding_.clone();
+      }
+      torch::Tensor activationMap = torch::sum(frame.featureMap * textEmbedding.view({1, 1, -1}), 2);
       // Avoid overflow issues for color scaling
       activationMap = activationMap.clamp(0.0f, 1.0f);
       torch::Tensor visFeatureMap = (activationMap * 254.0f).to(torch::kU8);
@@ -190,26 +195,31 @@ namespace okvis {
       cv::addWeighted(rgbImage, 0.2, visMatFeatureMapColored, 0.8, 0.0, images["language_rgb"]);
       images["raw_rgb"] = rgbImage;
 
-      cv::Mat masks(frame.samMasks.sizes()[1], frame.samMasks.sizes()[2], CV_8UC3, cv::Scalar(0,0,0));
-      float* data_ptr = reinterpret_cast<float*>(frame.samMasks.data_ptr());
-      int64_t num_masks = frame.samMasks.sizes()[0];
-      uchar colour_incr = (255 - 255 % (num_masks + 1)) / (num_masks + 1);
+      if(frame.samMasks.dim() != 3 || frame.samMasks.numel() == 0) {
+        DLOG(INFO) << "Vision Language Processor no SAM masks available for visualization";
+        return;
+      }
+      torch::Tensor samMasks = frame.samMasks.contiguous();
+      const int64_t num_masks = samMasks.size(0);
+      const int64_t mask_height = samMasks.size(1);
+      const int64_t mask_width = samMasks.size(2);
+      cv::Mat masks(mask_height, mask_width, CV_8UC3, cv::Scalar(0,0,0));
+      float* data_ptr = reinterpret_cast<float*>(samMasks.data_ptr());
       std::random_device dev;
       std::mt19937 rng(dev());
       std::uniform_int_distribution<std::mt19937::result_type> dist(1,255);
 
 
       for(int64_t mask_index = 0; mask_index < num_masks; mask_index++){
-        uchar colour = (mask_index + 1) * colour_incr;
         cv::Vec3b mask_colour(dist(rng), dist(rng), dist(rng));
-        for(int64_t u = 0; u < frame.samMasks.sizes()[1]; u++) {
-          for(int64_t v = 0; v < frame.samMasks.sizes()[2]; v++) {
+        for(int64_t u = 0; u < mask_height; u++) {
+          for(int64_t v = 0; v < mask_width; v++) {
             // Add bounds check
-            assert(mask_index >= 0 && mask_index < frame.samMasks.size(0));
-            assert(u >= 0 && u < frame.samMasks.size(1));
-            assert(v >= 0 && v < frame.samMasks.size(2));
-            int64_t index = mask_index * frame.samMasks.size(1) * frame.samMasks.size(2) + u * frame.samMasks.size(2) + v * frame.samMasks.size(3);
-            assert(index < frame.samMasks.numel());  // Ensure the index is within valid range
+            assert(mask_index >= 0 && mask_index < samMasks.size(0));
+            assert(u >= 0 && u < samMasks.size(1));
+            assert(v >= 0 && v < samMasks.size(2));
+            int64_t index = mask_index * mask_height * mask_width + u * mask_width + v;
+            assert(index < samMasks.numel());  // Ensure the index is within valid range
             float mask_value = *(data_ptr + index);
 
             // Ensure the index is within bounds
@@ -225,7 +235,8 @@ namespace okvis {
     }
 
     void VLProcessor::setLanguageEmbeddingVector(const torch::Tensor& embedding) {
-      textEmbedding_ = embedding / embedding.norm();  // normalize for easy visualization
+      std::lock_guard<std::mutex> lock(textEmbeddingMutex_);
+      textEmbedding_ = (embedding / embedding.norm()).detach().clone();  // normalize for easy visualization
     }
     void VLProcessor::setLanguageEmbedding(const Descriptor& embedding) {
       torch::Tensor embedding_tensor = torch::zeros({Descriptor::SizeAtCompileTime}, torch::kFloat32);
@@ -307,6 +318,14 @@ namespace okvis {
       auto sam_output = samModel_.forward(sam_inputs);
       *sam_segments = sam_output.toTuple()->elements()[0].toTensor().clone();
       *sam_segments = sam_segments->to(torch::kFloat32);
+      if(sam_segments->dim() == 4 && sam_segments->size(3) == 1) {
+        *sam_segments = sam_segments->squeeze(3);
+      }
+      if(sam_segments->dim() != 3) {
+        LOG(WARNING) << "Unexpected SAM mask tensor with " << sam_segments->dim() << " dimensions";
+        *sam_segments = torch::empty({0, rgbFrame.measurement.image.rows, rgbFrame.measurement.image.cols},
+                                     torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+      }
       *bbox_sam = sam_output.toTuple()->elements()[1].toTensor().clone().contiguous();
       *bbox_sam = bbox_sam->to(torch::kFloat32);
       *bbox_sam = bbox_sam->to(torch::kCPU);
@@ -314,21 +333,23 @@ namespace okvis {
 
       std::vector<int> filtered_indexes;
       segmentPostProcessing(bbox_sam, filtered_indexes);
-      torch::Tensor t_filtered_indexes = torch::from_blob(filtered_indexes.data(),
-                                                          {static_cast<int64_t>(filtered_indexes.size())},
-                                                          torch::kInt32).to(torch::kCUDA).clone();
-      *sam_segments = sam_segments->index_select(0, t_filtered_indexes);
-      *sam_segments = sam_segments->to(torch::kCPU);
+      if(filtered_indexes.empty() || sam_segments->size(0) == 0) {
+        *sam_segments = torch::empty({0, sam_segments->size(1), sam_segments->size(2)},
+                                     torch::TensorOptions().dtype(torch::kFloat32).device(torch::kCPU));
+      } else {
+        torch::Tensor t_filtered_indexes = torch::from_blob(filtered_indexes.data(),
+                                                            {static_cast<int64_t>(filtered_indexes.size())},
+                                                            torch::kInt32).to(torch::kCUDA).clone();
+        *sam_segments = sam_segments->index_select(0, t_filtered_indexes);
+        *sam_segments = sam_segments->to(torch::kCPU).contiguous();
+      }
 
       // Norm the feature map to [0, 1] for easy visualization.
       // Arguments: L2-norm, along the channel dimension, keep the dimension.
       *output = *output / torch::norm(*output, 2, 1, true);
 
       // Reshape the feature map to (C, H, W) and move to CPU.
-      *output = output->squeeze().to(torch::kCPU);  // Remove the batch dimension.
-      auto noop_deleter = [](float* ptr) {
-        // Do nothing, the tensor owns the memory
-      };
+      *output = output->squeeze().to(torch::kCPU).contiguous();  // Remove the batch dimension.
       rgbFrame.measurement.deep_learning_data["language_features"] = okvis::CameraData::DeepLearningImageData();
       rgbFrame.measurement.deep_learning_data["language_features"].shape = output->sizes().vec();
       rgbFrame.measurement.deep_learning_data["language_features"].data_ptr = std::shared_ptr<float>(output, reinterpret_cast<float*>(output->data_ptr()));
@@ -412,7 +433,7 @@ namespace okvis {
       cv::applyColorMap(outputDepth, visMatColored, cv::COLORMAP_INFERNO);
 
       VisualizationData visData;
-      visData.rgbFrame = rgbFrame.measurement.image;
+      visData.rgbFrame = rgbFrame.measurement.image.clone();
       visData.depthImage = visMatColored;
       visData.featureMap = output->clone();
       visData.samMasks = sam_segments->clone();
@@ -469,7 +490,7 @@ namespace okvis {
       std::map<size_t, std::vector<okvis::CameraMeasurement>> camera_measurements;
       for(auto& it: images){
         okvis::CameraMeasurement camMeasurement;
-        camMeasurement.measurement.image = it.second.second;
+        camMeasurement.measurement.image = it.second.second.clone();
         camMeasurement.timeStamp = it.second.first;
         camMeasurement.sensorId = it.first;
         camera_measurements[it.first] = {camMeasurement};
@@ -480,7 +501,7 @@ namespace okvis {
       // measurement with the same timestamp
       for(auto& it: depthImages) {
         okvis::CameraMeasurement camMeasurement;
-        camMeasurement.measurement.depthImage = it.second.second;
+        camMeasurement.measurement.depthImage = it.second.second.clone();
         camMeasurement.timeStamp = it.second.first;
         camMeasurement.sensorId = it.first;
         auto camera_measurements_it = camera_measurements.find(it.first);
@@ -491,7 +512,7 @@ namespace okvis {
           for(auto& cam_measure : camera_measurements_it->second) {
             if(cam_measure.timeStamp == it.second.first) {
               same_timestamp = true;
-              cam_measure.measurement.depthImage = it.second.second;
+              cam_measure.measurement.depthImage = it.second.second.clone();
               break;
             }
           }
